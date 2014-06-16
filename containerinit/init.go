@@ -31,7 +31,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dotcloud/docker/pkg/netlink"
+	"github.com/docker/libcontainer/netlink"
 	sigutil "github.com/dotcloud/docker/pkg/signal"
 	"github.com/dotcloud/docker/pkg/user"
 	"github.com/kr/pty"
@@ -68,14 +68,14 @@ const (
 )
 
 // client side of the com.flynn.ContainerInit dbus interface
-type ContainerInitClient struct {
+type Client struct {
 	obj         *dbus.Object
 	stateChange chan *dbus.Signal
 	conn        *dbus.Conn
 }
 
-func NewContainerInitClient(conn *dbus.Conn) *ContainerInitClient {
-	c := &ContainerInitClient{
+func NewClient(conn *dbus.Conn) *Client {
+	c := &Client{
 		obj:  conn.Object("", ContainerInitPath),
 		conn: conn,
 	}
@@ -85,7 +85,7 @@ func NewContainerInitClient(conn *dbus.Conn) *ContainerInitClient {
 	return c
 }
 
-func (c *ContainerInitClient) Close() {
+func (c *Client) Close() {
 	// Its currently unsafe to close a connection multiple times (https://github.com/guelfey/go.dbus/issues/47)
 	// We check for the signal channel being closed to see if it is safe to close
 	var eof, closed bool
@@ -105,7 +105,7 @@ func (c *ContainerInitClient) Close() {
 	}
 }
 
-func (c *ContainerInitClient) WaitForStateChange() (State, string, int) {
+func (c *Client) WaitForStateChange() (State, string, int) {
 	s := <-c.stateChange
 
 	// init died and closed the connection. This happens either
@@ -125,17 +125,17 @@ func (c *ContainerInitClient) WaitForStateChange() (State, string, int) {
 }
 
 // Get the current state (started/running/exited
-func (c *ContainerInitClient) GetState() (State, error) {
+func (c *Client) GetState() (State, error) {
 	var res int32
 	err := c.obj.Call(ContainerInitInterface+".GetState", 0).Store(&res)
 	return State(res), err
 }
 
-func (c *ContainerInitClient) Resume() error {
+func (c *Client) Resume() error {
 	return c.obj.Call(ContainerInitInterface+".Resume", 0).Store()
 }
 
-func (c *ContainerInitClient) GetPtyMaster() (*os.File, error) {
+func (c *Client) GetPtyMaster() (*os.File, error) {
 	var fd dbus.UnixFD
 	if err := c.obj.Call(ContainerInitInterface+".GetPtyMaster", 0).Store(&fd); err != nil {
 		return nil, err
@@ -143,23 +143,23 @@ func (c *ContainerInitClient) GetPtyMaster() (*os.File, error) {
 	return os.NewFile(uintptr(fd), "ptyMaster"), nil
 }
 
-func (c *ContainerInitClient) GetStdOut() (*os.File, *os.File, error) {
+func (c *Client) GetStdout() (*os.File, *os.File, error) {
 	var stdoutFd, stderrFd dbus.UnixFD
-	if err := c.obj.Call(ContainerInitInterface+".GetStdOut", 0).Store(&stdoutFd, &stderrFd); err != nil {
+	if err := c.obj.Call(ContainerInitInterface+".GetStdout", 0).Store(&stdoutFd, &stderrFd); err != nil {
 		return nil, nil, err
 	}
 	return os.NewFile(uintptr(stdoutFd), "stdout"), os.NewFile(uintptr(stderrFd), "stderr"), nil
 }
 
-func (c *ContainerInitClient) GetStdIn() (*os.File, error) {
+func (c *Client) GetStdin() (*os.File, error) {
 	var fd dbus.UnixFD
-	if err := c.obj.Call(ContainerInitInterface+".GetStdIn", 0).Store(&fd); err != nil {
+	if err := c.obj.Call(ContainerInitInterface+".GetStdin", 0).Store(&fd); err != nil {
 		return nil, err
 	}
 	return os.NewFile(uintptr(fd), "stdin"), nil
 }
 
-func (c *ContainerInitClient) Signal(signal int) error {
+func (c *Client) Signal(signal int) error {
 	return c.obj.Call(ContainerInitInterface+".Signal", 0, int32(signal)).Store()
 }
 
@@ -171,7 +171,7 @@ type ContainerInit struct {
 	sync.Mutex
 	introspectable introspect.Introspectable
 	state          State
-	resume         chan int
+	resume         chan struct{}
 	exitStatus     int32
 	error          string
 	process        *os.Process
@@ -207,7 +207,7 @@ func (init *ContainerInit) GetExitStatus() (int32, *dbus.Error) {
 func (init *ContainerInit) Resume() *dbus.Error {
 	init.Lock()
 	defer init.Unlock()
-	init.resume <- 1
+	init.resume <- struct{}{}
 	return nil
 }
 
@@ -234,13 +234,13 @@ func (init *ContainerInit) GetPtyMaster() (dbus.UnixFD, *dbus.Error) {
 	return dbus.UnixFD(init.ptyMaster.Fd()), nil
 }
 
-func (init *ContainerInit) GetStdOut() (dbus.UnixFD, dbus.UnixFD, *dbus.Error) {
+func (init *ContainerInit) GetStdout() (dbus.UnixFD, dbus.UnixFD, *dbus.Error) {
 	init.Lock()
 	defer init.Unlock()
 	return dbus.UnixFD(init.stdout.Fd()), dbus.UnixFD(init.stderr.Fd()), nil
 }
 
-func (init *ContainerInit) GetStdIn() (dbus.UnixFD, *dbus.Error) {
+func (init *ContainerInit) GetStdin() (dbus.UnixFD, *dbus.Error) {
 	init.Lock()
 	defer init.Unlock()
 
@@ -293,7 +293,7 @@ func containerInitNew(args *ContainerInitArgs) *ContainerInit {
 	init := &ContainerInit{
 		exitStatus: -1,
 		openStdin:  args.openStdin,
-		resume:     make(chan int),
+		resume:     make(chan struct{}),
 	}
 
 	introspectData := &introspect.Node{

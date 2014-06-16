@@ -1,24 +1,26 @@
 package host
 
 import (
+	"encoding/json"
 	"time"
-
-	"github.com/flynn/go-dockerclient"
 )
 
 type Job struct {
 	ID string
 
-	// Job attributes
 	Attributes map[string]string
-	// Number of TCP ports required by the job
-	TCPPorts int
 
-	Config     *docker.Config
-	HostConfig *docker.HostConfig
+	Artifact Artifact
+	// Quotas
+	// - memory
+	Type   string
+	Config json.RawMessage
 }
 
-// TODO: cleanup the Job struct (abstract docker stuff, etc)
+type Artifact struct {
+	URL  string
+	Type string
+}
 
 type Host struct {
 	ID string
